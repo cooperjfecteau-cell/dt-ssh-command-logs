@@ -22,6 +22,8 @@ HOST_KEY_KNOWN_HOSTS = "knownHosts"
 HOST_KEY_ACCEPT_ANY = "acceptAny"
 HOST_KEY_MODES = (HOST_KEY_PINNED, HOST_KEY_KNOWN_HOSTS, HOST_KEY_ACCEPT_ANY)
 
+MAX_COMMANDS_PER_ENDPOINT = 50
+
 DEFAULTS = {
     "port": 22,
     "authType": AUTH_PASSWORD,
@@ -42,14 +44,34 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class CommandConfig:
+    """One command to run on an endpoint.
+
+    Commands are a list of objects rather than a delimited string on purpose: a comma or
+    a semicolon is an ordinary character in a shell command (``awk -F,``, ``cut -d,``),
+    so any delimiter would silently truncate real commands. Objects also give each
+    command its own name to filter on and its own timeout.
+    """
+
+    name: str
+    command: str
+    timeout_seconds: int
+    log_source: str
+
+    @property
+    def key(self) -> str:
+        return self.name
+
+
+@dataclass(frozen=True)
 class EndpointConfig:
-    """One command, on one host, on one schedule."""
+    """One host, one set of credentials, one schedule, and the commands to run on it."""
 
     name: str
     host: str
     port: int
     username: str
-    command: str
+    commands: tuple[CommandConfig, ...] = ()
     auth_type: str = AUTH_PASSWORD
     password: str = ""
     private_key_path: str = ""
@@ -100,13 +122,15 @@ class EndpointConfig:
 
         auth_type = _choice(raw, "authType", AUTH_TYPES, label)
         host_key_verification = _choice(raw, "hostKeyVerification", HOST_KEY_MODES, label)
+        endpoint_timeout = _int(raw, "commandTimeoutSeconds", label, minimum=1, maximum=900)
+        endpoint_log_source = _text(raw, "logSource") or DEFAULTS["logSource"]
 
         config = cls(
             name=label,
             host=required("host"),
             port=_int(raw, "port", label, minimum=1, maximum=65535),
             username=required("username"),
-            command=required("command"),
+            commands=_commands(raw, label, endpoint_timeout, endpoint_log_source),
             auth_type=auth_type,
             password=_text(raw, "password"),
             private_key_path=_text(raw, "privateKeyPath"),
@@ -118,8 +142,8 @@ class EndpointConfig:
             use_pty=_bool(raw, "usePty"),
             interval_minutes=_int(raw, "intervalMinutes", label, minimum=1, maximum=1440),
             connect_timeout_seconds=_int(raw, "connectTimeoutSeconds", label, minimum=1, maximum=300),
-            command_timeout_seconds=_int(raw, "commandTimeoutSeconds", label, minimum=1, maximum=900),
-            log_source=_text(raw, "logSource") or DEFAULTS["logSource"],
+            command_timeout_seconds=endpoint_timeout,
+            log_source=endpoint_log_source,
             split_lines=_bool(raw, "splitLines"),
             max_lines=_int(raw, "maxLines", label, minimum=1, maximum=50000),
             max_output_bytes=_int(raw, "maxOutputBytes", label, minimum=1024, maximum=10 * 1024 * 1024),
@@ -175,6 +199,64 @@ def load_endpoints(activation_config) -> tuple[list[EndpointConfig], list[str]]:
         except ConfigError as exception:
             errors.append(str(exception))
     return configs, errors
+
+
+def _commands(
+    raw: dict, label: str, endpoint_timeout: int, endpoint_log_source: str
+) -> tuple[CommandConfig, ...]:
+    raw_commands = raw.get("commands")
+
+    # A bare 'command' is still accepted so a single-command configuration written against
+    # the earlier schema keeps working after an upgrade.
+    if not raw_commands and _text(raw, "command"):
+        raw_commands = [{"name": label, "command": _text(raw, "command", strip=False)}]
+
+    if not raw_commands:
+        msg = f"{label}: at least one command is required"
+        raise ConfigError(msg)
+    if not isinstance(raw_commands, list):
+        msg = f"{label}: 'commands' must be a list of command objects"
+        raise ConfigError(msg)
+    if len(raw_commands) > MAX_COMMANDS_PER_ENDPOINT:
+        msg = f"{label}: at most {MAX_COMMANDS_PER_ENDPOINT} commands per endpoint, got {len(raw_commands)}"
+        raise ConfigError(msg)
+
+    commands: list[CommandConfig] = []
+    seen: set[str] = set()
+    for position, entry in enumerate(raw_commands):
+        if not isinstance(entry, dict):
+            msg = f"{label}: command #{position + 1} must be an object with 'name' and 'command'"
+            raise ConfigError(msg)
+
+        # Read straight off the entry rather than through _text: DEFAULTS holds the
+        # endpoint-level defaults, and letting those apply here would make an unset
+        # per-command logSource override the endpoint's choice with the global default.
+        name = str(entry.get("name") or "").strip() or f"command-{position + 1}"
+        command = str(entry.get("command") or "").strip()
+        if not command:
+            msg = f"{label}/{name}: 'command' is required"
+            raise ConfigError(msg)
+
+        # Names become a log attribute and the way a command is picked out in a query, so
+        # a duplicate would make two different commands indistinguishable.
+        if name in seen:
+            msg = f"{label}: two commands are both named '{name}'; names must be unique within an endpoint"
+            raise ConfigError(msg)
+        seen.add(name)
+
+        timeout = endpoint_timeout
+        if entry.get("timeoutSeconds") not in (None, "", 0):
+            timeout = _int(entry, "timeoutSeconds", f"{label}/{name}", minimum=1, maximum=900)
+
+        commands.append(
+            CommandConfig(
+                name=name,
+                command=command,
+                timeout_seconds=timeout,
+                log_source=str(entry.get("logSource") or "").strip() or endpoint_log_source,
+            )
+        )
+    return tuple(commands)
 
 
 def _text(raw: dict, prop: str, *, strip: bool = True) -> str:

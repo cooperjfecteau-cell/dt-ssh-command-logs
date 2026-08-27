@@ -1,4 +1,4 @@
-"""The SSH half of the extension: connect, run one command, bring back its terminal output.
+"""The SSH half of the extension: connect once, run the commands, bring back their output.
 
 Kept free of any Dynatrace imports so it can be exercised against a real SSH server in the
 test suite without an EEC or a tenant.
@@ -21,6 +21,7 @@ from .config import (
     AUTH_PASSWORD,
     HOST_KEY_ACCEPT_ANY,
     HOST_KEY_KNOWN_HOSTS,
+    CommandConfig,
     EndpointConfig,
 )
 
@@ -59,6 +60,7 @@ class SshCommandTimeoutError(SshError):
 class CommandResult:
     """Everything one command run produced, ready to be turned into log records."""
 
+    command: CommandConfig | None = None
     stdout: str = ""
     stderr: str = ""
     exit_code: int | None = None
@@ -66,10 +68,14 @@ class CommandResult:
     truncated: bool = False
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     host_key_fingerprint: str = ""
+    # Set when this particular command failed after the connection was already up, so the
+    # other commands on the same session still report their own output.
+    error: str = ""
+    error_type: str = ""
 
     @property
     def succeeded(self) -> bool:
-        return self.exit_code == 0
+        return not self.error and self.exit_code == 0
 
 
 def fingerprint_of(key: paramiko.PKey) -> str:
@@ -124,16 +130,21 @@ class _KnownHostsPolicy(paramiko.MissingHostKeyPolicy):
         raise SshHostKeyError(msg)
 
 
-def run_command(config: EndpointConfig) -> CommandResult:
-    """Connect, run ``config.command`` once, and return its output.
+def run_commands(config: EndpointConfig) -> list[CommandResult]:
+    """Connect once, then run every configured command on its own channel.
+
+    One TCP connection and one authentication serve the whole endpoint, with a fresh
+    session channel per command. That is what SSH multiplexing does, and it is what keeps
+    a five-command endpoint from paying five handshakes and writing five
+    "Accepted publickey" lines into the host's auth log every interval.
+
+    A command that times out is recorded on its own result and the rest still run; only a
+    connection-level failure aborts the endpoint.
 
     Raises:
-        SshHostKeyError, SshAuthError, SshConnectError, SshCommandTimeoutError: all with a
+        SshHostKeyError, SshAuthError, SshConnectError: connection-level failures, with a
             message written to be shown to whoever configured the endpoint.
     """
-    started_at = datetime.now(timezone.utc)
-    started = time.monotonic()
-
     client = paramiko.SSHClient()
     try:
         _apply_host_key_policy(client, config)
@@ -141,19 +152,41 @@ def run_command(config: EndpointConfig) -> CommandResult:
 
         transport = client.get_transport()
         fingerprint = fingerprint_of(transport.get_remote_server_key()) if transport else ""
-        stdout, stderr, exit_code, truncated = _exec(transport, config)
 
-        return CommandResult(
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
-            duration_ms=(time.monotonic() - started) * 1000,
-            truncated=truncated,
-            started_at=started_at,
-            host_key_fingerprint=fingerprint,
-        )
+        return [_run_one(transport, config, command, fingerprint) for command in config.commands]
     finally:
         client.close()
+
+
+def _run_one(
+    transport, config: EndpointConfig, command: CommandConfig, fingerprint: str
+) -> CommandResult:
+    started_at = datetime.now(timezone.utc)
+    started = time.monotonic()
+
+    stdout = stderr = ""
+    exit_code: int | None = None
+    truncated = False
+    error = error_type = ""
+
+    try:
+        stdout, stderr, exit_code, truncated = _exec(transport, config, command)
+    except SshError as exception:
+        error = str(exception)
+        error_type = type(exception).__name__
+
+    return CommandResult(
+        command=command,
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        duration_ms=(time.monotonic() - started) * 1000,
+        truncated=truncated,
+        started_at=started_at,
+        host_key_fingerprint=fingerprint,
+        error=error,
+        error_type=error_type,
+    )
 
 
 def _apply_host_key_policy(client: paramiko.SSHClient, config: EndpointConfig) -> None:
@@ -247,16 +280,20 @@ def _load_private_key(config: EndpointConfig) -> paramiko.PKey:
     raise SshAuthError(msg) from last_error
 
 
-def _exec(transport, config: EndpointConfig) -> tuple[str, str, int | None, bool]:
-    """Run the command on a fresh session channel and drain both output streams."""
+def _exec(
+    transport, config: EndpointConfig, command: CommandConfig
+) -> tuple[str, str, int | None, bool]:
+    """Run one command on a fresh session channel and drain both output streams."""
+    label = f"{config.name}/{command.name}"
+
     if transport is None:
-        msg = f"{config.name}: the SSH transport closed before the command could start"
+        msg = f"{label}: the SSH transport closed before the command could start"
         raise SshConnectError(msg)
 
     try:
         channel = transport.open_session(timeout=config.connect_timeout_seconds)
     except paramiko.SSHException as exception:
-        msg = f"{config.name}: could not open a session channel on {config.target}: {exception}"
+        msg = f"{label}: could not open a session channel on {config.target}: {exception}"
         raise SshConnectError(msg) from exception
 
     stdout = bytearray()
@@ -264,15 +301,15 @@ def _exec(transport, config: EndpointConfig) -> tuple[str, str, int | None, bool
     truncated = False
 
     try:
-        channel.settimeout(config.command_timeout_seconds)
+        channel.settimeout(command.timeout_seconds)
         if config.use_pty:
             channel.get_pty()
-        channel.exec_command(config.command)
+        channel.exec_command(command.command)
         # Nothing is ever written to the command's stdin; closing it stops commands that
         # read from stdin from hanging until the timeout.
         channel.shutdown_write()
 
-        deadline = time.monotonic() + config.command_timeout_seconds
+        deadline = time.monotonic() + command.timeout_seconds
         while True:
             read_any = _drain(channel, stdout, stderr)
 
@@ -288,8 +325,8 @@ def _exec(transport, config: EndpointConfig) -> tuple[str, str, int | None, bool
 
             if time.monotonic() > deadline:
                 msg = (
-                    f"{config.name}: command did not finish within "
-                    f"{config.command_timeout_seconds}s on {config.target}"
+                    f"{label}: command did not finish within "
+                    f"{command.timeout_seconds}s on {config.target}"
                 )
                 raise SshCommandTimeoutError(msg)
 
@@ -298,7 +335,7 @@ def _exec(transport, config: EndpointConfig) -> tuple[str, str, int | None, bool
 
         exit_code = channel.recv_exit_status() if channel.exit_status_ready() else None
     except TimeoutError as exception:
-        msg = f"{config.name}: timed out reading command output from {config.target}"
+        msg = f"{label}: timed out reading command output from {config.target}"
         raise SshCommandTimeoutError(msg) from exception
     finally:
         channel.close()

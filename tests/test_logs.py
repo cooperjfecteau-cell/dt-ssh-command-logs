@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ssh_command_logs.config import EndpointConfig
+from ssh_command_logs.config import CommandConfig, EndpointConfig
 from ssh_command_logs.logs import build_failure_event, build_log_events
 from ssh_command_logs.ssh_client import CommandResult, SshAuthError
 
 FIXED_TIME = datetime(2026, 8, 26, 14, 30, 15, 123456, tzinfo=timezone.utc)
+
+
+COMMAND = CommandConfig(
+    name="disk", command="df -h /", timeout_seconds=60, log_source="linux.disk"
+)
 
 
 def config(**overrides) -> EndpointConfig:
@@ -17,7 +22,7 @@ def config(**overrides) -> EndpointConfig:
         "host": "10.0.0.5",
         "port": 22,
         "username": "svc-dynatrace",
-        "command": "df -h /",
+        "commands": (COMMAND,),
         "password": "hunter2",
         "log_source": "linux.disk",
     }
@@ -27,6 +32,7 @@ def config(**overrides) -> EndpointConfig:
 
 def result(**overrides) -> CommandResult:
     values = {
+        "command": COMMAND,
         "stdout": "Filesystem      Size  Used Avail Use%\n/dev/sda1        50G   21G   27G  44%",
         "stderr": "",
         "exit_code": 0,
@@ -57,6 +63,8 @@ def test_records_carry_the_identifying_attributes():
     assert event["ssh.endpoint"] == "web-01 disk"
     assert event["ssh.user"] == "svc-dynatrace"
     assert event["ssh.command"] == "df -h /"
+    # The name is what distinguishes this command's records when an endpoint runs several.
+    assert event["ssh.command_name"] == "disk"
     assert event["ssh.exit_code"] == 0
     assert event["ssh.stream"] == "stdout"
     assert event["severity"] == "INFO"
@@ -131,6 +139,20 @@ def test_blank_lines_are_dropped():
     events = build_log_events(config(), result(stdout="first\n\n   \nsecond\n"))
 
     assert [event["content"] for event in events] == ["first", "second"]
+
+
+def test_a_command_that_failed_mid_session_reports_only_its_own_error():
+    events = build_log_events(
+        config(), result(stdout="", error="timed out after 30s", error_type="SshCommandTimeoutError")
+    )
+
+    assert len(events) == 1
+    assert events[0]["severity"] == "ERROR"
+    assert events[0]["ssh.failed"] is True
+    assert events[0]["ssh.error_type"] == "SshCommandTimeoutError"
+    assert "timed out after 30s" in events[0]["content"]
+    # Still attributed to the command, so the other commands on that session are unaffected.
+    assert events[0]["ssh.command_name"] == "disk"
 
 
 def test_failure_event_names_the_cause():

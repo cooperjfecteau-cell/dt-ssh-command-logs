@@ -1,5 +1,5 @@
 name: custom:ssh.command.logs
-version: 0.1.0
+version: 0.2.0
 minDynatraceVersion: "1.285"
 author:
   name: Cooper Fecteau

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from .config import EndpointConfig
+from .config import CommandConfig, EndpointConfig
 from .ssh_client import CommandResult
 
 SEVERITY_INFO = "INFO"
@@ -20,10 +20,14 @@ STREAM_STDOUT = "stdout"
 STREAM_STDERR = "stderr"
 
 
-def base_attributes(config: EndpointConfig) -> dict:
-    """Attributes every record from an endpoint carries, whether it succeeded or not."""
+def base_attributes(config: EndpointConfig, command: CommandConfig | None = None) -> dict:
+    """Attributes every record from an endpoint carries, whether it succeeded or not.
+
+    ``command`` is absent only for a connection-level failure, where no single command is
+    to blame.
+    """
     attributes = {
-        "log.source": config.log_source,
+        "log.source": command.log_source if command is not None else config.log_source,
         # host.name is what Dynatrace uses to associate a log record with a monitored host,
         # so the records land on the target server rather than on the ActiveGate.
         "host.name": config.host,
@@ -31,8 +35,12 @@ def base_attributes(config: EndpointConfig) -> dict:
         "ssh.host": config.host,
         "ssh.port": config.port,
         "ssh.user": config.username,
-        "ssh.command": config.command,
     }
+    if command is not None:
+        # The name is what you filter on when an endpoint runs several commands; the text
+        # is there so a record explains itself without opening the configuration.
+        attributes["ssh.command_name"] = command.name
+        attributes["ssh.command"] = command.command
     attributes.update(config.additional_attributes)
     return attributes
 
@@ -44,7 +52,7 @@ def build_log_events(config: EndpointConfig, result: CommandResult) -> list[dict
     returning anything is exactly the case someone needs to see in the log stream.
     """
     timestamp = _iso(result.started_at)
-    common = base_attributes(config)
+    common = base_attributes(config, result.command)
     common.update(
         {
             "ssh.exit_code": result.exit_code,
@@ -53,6 +61,21 @@ def build_log_events(config: EndpointConfig, result: CommandResult) -> list[dict
     )
     if result.truncated:
         common["ssh.truncated"] = True
+
+    # A command that failed once the session was already up reports its own error. The
+    # other commands sharing that session are unaffected and still report their output.
+    if result.error:
+        return [
+            {
+                **common,
+                "timestamp": timestamp,
+                "severity": SEVERITY_ERROR,
+                "content": f"SSH command failed: {result.error}",
+                "ssh.stream": STREAM_STDERR,
+                "ssh.error_type": result.error_type,
+                "ssh.failed": True,
+            }
+        ]
 
     failed = not result.succeeded
     events: list[dict] = []
@@ -94,10 +117,12 @@ def build_log_events(config: EndpointConfig, result: CommandResult) -> list[dict
     return events
 
 
-def build_failure_event(config: EndpointConfig, error: Exception) -> dict:
+def build_failure_event(
+    config: EndpointConfig, error: Exception, command: CommandConfig | None = None
+) -> dict:
     """A record for a run that never got as far as producing output."""
     return {
-        **base_attributes(config),
+        **base_attributes(config, command),
         "timestamp": _iso(datetime.now(timezone.utc)),
         "severity": SEVERITY_ERROR,
         "content": f"SSH command failed: {error}",

@@ -12,9 +12,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dynatrace_extension import Extension, Status, StatusValue
 
-from .config import EndpointConfig, load_endpoints
+from .config import CommandConfig, EndpointConfig, load_endpoints
 from .logs import build_failure_event, build_log_events
-from .ssh_client import CommandResult, SshError, run_command
+from .ssh_client import CommandResult, SshError, run_commands
 
 EXTENSION_NAME = "ssh_command_logs"
 
@@ -55,11 +55,13 @@ class ExtensionImpl(Extension):
 
         self.logger.info(f"Running {len(due)} of {len(configs)} SSH endpoint(s)")
 
-        futures = {self._pool.submit(run_command, config): config for config in due}
+        futures = {self._pool.submit(run_commands, config): config for config in due}
         for future in as_completed(futures):
             config = futures[future]
             try:
-                self._ingest(config, future.result())
+                # One connection produced every result in this list.
+                for result in future.result():
+                    self._ingest(config, result)
             except SshError as exception:
                 self._ingest_failure(config, exception)
             except Exception as exception:  # noqa: BLE001 - one endpoint must not stop the rest
@@ -94,18 +96,25 @@ class ExtensionImpl(Extension):
         events = build_log_events(config, result)
         self.report_log_events(events)
         self._report_metrics(config, result, len(events))
+        name = result.command.name if result.command else config.name
         self.logger.info(
-            f"{config.name}: exit={result.exit_code} lines={len(events)} "
+            f"{config.name}/{name}: exit={result.exit_code} lines={len(events)} "
             f"duration={result.duration_ms:.0f}ms"
         )
 
     def _ingest_failure(self, config: EndpointConfig, error: Exception) -> None:
+        """A connection-level failure: no command on this endpoint ran."""
         self.logger.error(f"{config.name}: {error}")
         self.report_log_event(build_failure_event(config, error))
-        self.report_metric("ssh.command.success", 0, dimensions=_dimensions(config))
+        # Reported per command so an alert on one command still fires when the host itself
+        # is unreachable, rather than going silent.
+        for command in config.commands:
+            self.report_metric(
+                "ssh.command.success", 0, dimensions=_dimensions(config, command)
+            )
 
     def _report_metrics(self, config: EndpointConfig, result: CommandResult, line_count: int) -> None:
-        dimensions = _dimensions(config)
+        dimensions = _dimensions(config, result.command)
         self.report_metric("ssh.command.duration", result.duration_ms, dimensions=dimensions)
         self.report_metric("ssh.command.output_lines", line_count, dimensions=dimensions)
         self.report_metric("ssh.command.success", 1 if result.succeeded else 0, dimensions=dimensions)
@@ -119,12 +128,15 @@ class ExtensionImpl(Extension):
             self.initialize()
 
 
-def _dimensions(config: EndpointConfig) -> dict[str, str]:
-    return {
+def _dimensions(config: EndpointConfig, command: CommandConfig | None = None) -> dict[str, str]:
+    dimensions = {
         "endpoint": config.name,
         "host": config.host,
         "user": config.username,
     }
+    if command is not None:
+        dimensions["command"] = command.name
+    return dimensions
 
 
 def main():

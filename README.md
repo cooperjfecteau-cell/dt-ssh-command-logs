@@ -1,6 +1,6 @@
 # dt-ssh-command-logs
 
-A Dynatrace Extension 2.0 that connects to a Linux server over SSH, runs a command you
+A Dynatrace Extension 2.0 that connects to a Linux server over SSH, runs the commands you
 choose, and ingests the terminal output as log records in Grail.
 
 It exists for the things that have no agent and no API: a vendor appliance, a hardened
@@ -17,7 +17,7 @@ ActiveGate ──ssh──▶ Linux host ──stdout/stderr──▶ log record
 | Data source | Python (Extension 2.0) |
 | Runs on | ActiveGate (remote activation) |
 | Ingests | Log records, plus four self-monitoring metrics |
-| Needs on the target | An SSH login and the command you want to run. No agent. |
+| Needs on the target | An SSH login and the commands you want to run. No agent. |
 
 ## What lands in Dynatrace
 
@@ -35,7 +35,8 @@ carrying these attributes:
 |---|---|---|
 | `log.source` | `linux.disk` | What you filter on. You choose it per endpoint. |
 | `host.name` | `10.0.0.5` | Associates the record with the target host, not the ActiveGate. |
-| `ssh.endpoint` | `web-01 disk` | The endpoint name from the monitoring configuration. |
+| `ssh.endpoint` | `web-01` | The endpoint name from the monitoring configuration. |
+| `ssh.command_name` | `disk` | Which command produced the record. What you filter on. |
 | `ssh.command` | `df -h /` | The command, verbatim. |
 | `ssh.exit_code` | `0` | Exit status of the whole run. |
 | `ssh.stream` | `stdout` / `stderr` | Which stream the line came from. |
@@ -50,7 +51,7 @@ Query them:
 ```
 fetch logs
 | filter log.source == "linux.disk"
-| filter ssh.endpoint == "web-01 disk"
+| filter ssh.endpoint == "web-01" and ssh.command_name == "disk"
 | sort timestamp desc, ssh.line asc
 | fields timestamp, host.name, ssh.exit_code, content
 ```
@@ -60,19 +61,19 @@ Find runs that failed:
 ```
 fetch logs
 | filter isNotNull(ssh.exit_code) and ssh.exit_code != 0
-| summarize count(), by: {ssh.endpoint, ssh.command, ssh.exit_code}
+| summarize count(), by: {ssh.endpoint, ssh.command_name, ssh.exit_code}
 ```
 
 ### Metrics
 
 Four metrics come along for alerting on the command itself rather than its text, all
-dimensioned by `endpoint`, `host` and `user`:
+dimensioned by `endpoint`, `host`, `user` and `command`:
 
 `ssh.command.exit_code`, `ssh.command.duration`, `ssh.command.output_lines`,
 `ssh.command.success` (1 or 0).
 
 `ssh.command.success` is the one to put a static-threshold anomaly detector on: it goes to
-0 for a failed command *and* for a host that could not be reached at all.
+0 for a failed command *and*, per command, for a host that could not be reached at all.
 
 ## Install
 
@@ -88,7 +89,27 @@ dimensioned by `endpoint`, `host` and `user`:
 
 ## Configure an endpoint
 
-One endpoint is one command on one host on one schedule. Add as many as you need.
+One endpoint is one host, one set of credentials, one schedule, and a list of commands.
+
+### One SSH session per endpoint, however many commands
+
+All of an endpoint's commands run over a **single SSH connection**, each on its own session
+channel. That is deliberate, and it is why commands are a list on the endpoint rather than
+one command per endpoint:
+
+- A handshake is TCP plus key exchange plus authentication — typically 100-300 ms, and far
+  worse across a WAN or a jump network. Ten commands as ten endpoints pay that ten times,
+  every interval.
+- `sshd` rate-limits new connections (`MaxStartups`), and fail2ban-style tooling treats a
+  burst of them as an attack.
+- Every connection writes an `Accepted publickey` line to the target's auth log. A
+  one-minute interval across ten commands is 14,400 lines a day of pure noise.
+
+It is the same reasoning behind OpenSSH's own `ControlMaster` multiplexing. A test asserts
+that three commands produce three channels and exactly one connection.
+
+A command that times out is recorded against that command alone and the rest still run;
+only a connection-level failure (auth, host key, unreachable) stops the whole endpoint.
 
 **Connection** — host, port, user, and one of three authentications:
 
@@ -101,7 +122,7 @@ One endpoint is one command on one host on one schedule. Add as many as you need
 new endpoint is *expected* to fail:
 
 ```
-web-01 disk: no expected host key fingerprint is configured. 10.0.0.5 presented
+web-01: no expected host key fingerprint is configured. 10.0.0.5 presented
 SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU (ssh-ed25519). Paste that value
 into 'Expected host key fingerprint' after confirming it out of band.
 ```
@@ -113,10 +134,15 @@ connection instead of handing your credentials to whatever answered.
 The alternatives are a `known_hosts` file on the ActiveGate, or **Accept any host key**,
 which is offered for lab use and is exactly as unsafe as it sounds.
 
-**Command** — runs through the login user's default shell, exactly as typed. Pipes,
-`&&`, and redirection all work. Turn on **Allocate a pseudo-terminal** for commands that
-refuse to run without a TTY; note that this merges stderr into stdout, the way it would in
-your own terminal.
+**Commands** — a list, not a delimited string. Each entry has a name, the command itself,
+and optional per-command timeout and log source overrides. Commands run through the login
+user's default shell exactly as typed, so pipes, `&&` and redirection all work — including
+commands full of commas like `awk -F, '{print $2}'`, which is precisely why this is a list
+of objects rather than a comma-separated field.
+
+Turn on **Allocate a pseudo-terminal** for commands that refuse to run without a TTY; note
+that this merges stderr into stdout, the way it would in your own terminal, and that it
+applies to every command on the endpoint.
 
 **Limits** — `Run every` (minutes), connect and command timeouts, `Maximum lines per run`,
 `Maximum output bytes per run`. Hitting a limit ingests a `WARN` record saying so rather
@@ -132,7 +158,7 @@ answers your question.
 
 ## Security
 
-- The account only needs permission to run your command. Give it a dedicated login and
+- The account only needs permission to run your commands. Give it a dedicated login and
   the narrowest shell you can; `command=` restrictions in `authorized_keys` work well.
 - Credentials live in the Dynatrace credential vault and are never placed on a log record;
   a test asserts this.
@@ -176,7 +202,7 @@ dt-sdk run                           # in another shell
 would have sent, so you can see the exact payload without a tenant.
 
 ```bash
-pytest                               # 42 tests
+pytest                               # 59 tests
 ruff check .
 ```
 
@@ -204,7 +230,6 @@ tools/
 
 ## Limitations
 
-- One command per endpoint. A shell one-liner covers most of what multiple commands would.
 - No interactive sessions: no `sudo` password prompts (use `NOPASSWD` or a key with a
   forced command), no paging, no long-lived streams. `tail -f` will hit the command timeout.
 - Output is captured after the command exits, so a long-running command ingests nothing

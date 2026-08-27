@@ -61,6 +61,10 @@ class SshTestServer:
         self._running = False
         self._thread: threading.Thread | None = None
         self.commands_received: list[str] = []
+        # Counts full SSH connections, as distinct from the session channels opened on
+        # them. The gap between the two is the whole point of running several commands
+        # over one session.
+        self.connection_count = 0
 
     def start(self) -> tuple[str, int]:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -108,6 +112,7 @@ class SshTestServer:
             ).start()
 
     def _serve(self, connection: socket.socket) -> None:
+        self.connection_count += 1
         transport = paramiko.Transport(connection)
         transport.add_server_key(self.host_key)
         self._transports.append(transport)

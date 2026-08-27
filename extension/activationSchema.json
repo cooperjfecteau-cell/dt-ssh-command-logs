@@ -2,8 +2,8 @@
   "dynatrace": "1",
   "schemaId": "python-extension.activation",
   "displayName": "SSH command logs",
-  "description": "Run a command on a Linux host over SSH and ingest its terminal output as logs",
-  "documentation": "Each endpoint is one command on one host. Output lines become log records carrying the log source you choose.",
+  "description": "Run commands on a Linux host over SSH and ingest their terminal output as logs",
+  "documentation": "Each endpoint is one host. Every command on it runs over a single shared SSH session, so adding commands does not add connections. Output lines become log records tagged with ssh.command_name.",
   "ownerProductManagement": "custom",
   "ownerDevelopment": "custom",
   "maturity": "GENERAL_AVAILABILITY",
@@ -287,21 +287,21 @@
             "expectedValue": "knownHosts"
           }
         },
-        "command": {
-          "displayName": "Command",
-          "description": "Runs through the login user default shell, exactly as typed",
-          "type": "text",
-          "subType": "multiline",
-          "nullable": false,
-          "default": "",
-          "constraints": [
-            {
-              "type": "LENGTH",
-              "minLength": 1,
-              "maxLength": 8000
+        "commands": {
+          "displayName": "Commands",
+          "description": "Every command here runs on one shared SSH session, in order",
+          "type": "list",
+          "items": {
+            "type": {
+              "$ref": "#/types/dynatrace.datasource.python:ssh-command"
             }
-          ],
-          "maxItems": 1
+          },
+          "nullable": false,
+          "minItems": 1,
+          "maxItems": 50,
+          "metaData": {
+            "addItemButton": "Add command"
+          }
         },
         "usePty": {
           "displayName": "Allocate a pseudo-terminal",
@@ -439,6 +439,73 @@
           "metaData": {
             "addItemButton": "Add endpoint"
           }
+        }
+      }
+    },
+    "dynatrace.datasource.python:ssh-command": {
+      "type": "object",
+      "displayName": "Command",
+      "summaryPattern": "{name}",
+      "properties": {
+        "name": {
+          "displayName": "Command name",
+          "description": "Attached to every log record as ssh.command_name. This is how you tell one command's output from another in a query, so keep it unique within the endpoint.",
+          "type": "text",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          ],
+          "maxItems": 1
+        },
+        "command": {
+          "displayName": "Command",
+          "description": "Runs through the login user default shell, exactly as typed",
+          "type": "text",
+          "subType": "multiline",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 8000
+            }
+          ],
+          "maxItems": 1
+        },
+        "timeoutSeconds": {
+          "displayName": "Command timeout (seconds)",
+          "description": "0 uses the endpoint timeout. Set it per command when one is much slower than the rest.",
+          "type": "integer",
+          "nullable": false,
+          "default": 0,
+          "constraints": [
+            {
+              "type": "RANGE",
+              "minimum": 0,
+              "maximum": 900
+            }
+          ],
+          "maxItems": 1
+        },
+        "logSource": {
+          "displayName": "Log source override",
+          "description": "Leave empty to use the endpoint log source",
+          "type": "text",
+          "nullable": true,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "maxLength": 200
+            }
+          ],
+          "maxItems": 1
         }
       }
     }

@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "description": "Local development activation. Point it at tools/local_ssh_server.py, not a real host.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "activationContext": "REMOTE",
   "pythonRemote": {
     "endpoints": [
@@ -13,7 +13,20 @@
         "authType": "password",
         "password": "{{sshPassword}}",
         "hostKeyVerification": "acceptAny",
-        "command": "uptime && df -h /",
+        "commands": [
+          {
+            "name": "uptime-and-disk",
+            "command": "uptime && df -h /",
+            "timeoutSeconds": 0,
+            "logSource": ""
+          },
+          {
+            "name": "failed-units",
+            "command": "systemctl is-failed nginx",
+            "timeoutSeconds": 0,
+            "logSource": ""
+          }
+        ],
         "usePty": false,
         "intervalMinutes": 1,
         "connectTimeoutSeconds": 10,
