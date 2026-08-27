@@ -1,0 +1,454 @@
+{
+  "dynatrace": "1",
+  "schemaId": "python-extension.activation",
+  "displayName": "SSH command logs",
+  "description": "Run a command on a Linux host over SSH and ingest its terminal output as logs",
+  "documentation": "Each endpoint is one command on one host. Output lines become log records carrying the log source you choose.",
+  "ownerProductManagement": "custom",
+  "ownerDevelopment": "custom",
+  "maturity": "GENERAL_AVAILABILITY",
+  "allowedScopes": [
+    "tenant"
+  ],
+  "multiObject": false,
+  "enums": {
+    "sshAuthType": {
+      "displayName": "SSH authentication type",
+      "description": "How the extension authenticates to the remote host",
+      "documentation": "",
+      "type": "enum",
+      "items": [
+        {
+          "value": "password",
+          "displayName": "Password"
+        },
+        {
+          "value": "keyFile",
+          "displayName": "Private key file on the ActiveGate"
+        },
+        {
+          "value": "keyContent",
+          "displayName": "Private key pasted below"
+        }
+      ]
+    },
+    "sshHostKeyVerification": {
+      "displayName": "Host key verification",
+      "description": "How the remote host SSH host key is verified",
+      "documentation": "",
+      "type": "enum",
+      "items": [
+        {
+          "value": "pinnedFingerprint",
+          "displayName": "Pinned SHA256 fingerprint (recommended)"
+        },
+        {
+          "value": "knownHosts",
+          "displayName": "known_hosts file on the ActiveGate"
+        },
+        {
+          "value": "acceptAny",
+          "displayName": "Accept any host key (insecure)"
+        }
+      ]
+    }
+  },
+  "types": {
+    "dynatrace.datasource.python:ssh-log-attribute": {
+      "type": "object",
+      "displayName": "Log attribute",
+      "summaryPattern": "{key} = {value}",
+      "properties": {
+        "key": {
+          "displayName": "Attribute key",
+          "type": "text",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          ],
+          "maxItems": 1
+        },
+        "value": {
+          "displayName": "Attribute value",
+          "type": "text",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          ],
+          "maxItems": 1
+        }
+      }
+    },
+    "dynatrace.datasource.python:ssh-command-endpoint": {
+      "type": "object",
+      "displayName": "SSH command endpoint",
+      "summaryPattern": "{name} ({username}@{host}:{port})",
+      "properties": {
+        "name": {
+          "displayName": "Endpoint name",
+          "description": "Friendly name, attached to every log record as ssh.endpoint",
+          "type": "text",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          ],
+          "maxItems": 1
+        },
+        "host": {
+          "displayName": "Host",
+          "description": "Hostname or IP address of the Linux server",
+          "type": "text",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          ],
+          "maxItems": 1
+        },
+        "port": {
+          "displayName": "SSH port",
+          "type": "integer",
+          "nullable": false,
+          "default": 22,
+          "constraints": [
+            {
+              "type": "RANGE",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          ],
+          "maxItems": 1
+        },
+        "username": {
+          "displayName": "User name",
+          "type": "text",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          ],
+          "maxItems": 1
+        },
+        "authType": {
+          "displayName": "Authentication",
+          "type": {
+            "$ref": "#/enums/sshAuthType"
+          },
+          "nullable": false,
+          "default": "password",
+          "maxItems": 1
+        },
+        "password": {
+          "displayName": "Password",
+          "type": "secret",
+          "nullable": true,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "maxLength": 500
+            }
+          ],
+          "maxItems": 1,
+          "precondition": {
+            "type": "EQUALS",
+            "property": "authType",
+            "expectedValue": "password"
+          }
+        },
+        "privateKeyPath": {
+          "displayName": "Private key file path",
+          "description": "Absolute path on the ActiveGate, readable by the ActiveGate service user",
+          "type": "text",
+          "nullable": true,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "maxLength": 1000
+            }
+          ],
+          "maxItems": 1,
+          "precondition": {
+            "type": "EQUALS",
+            "property": "authType",
+            "expectedValue": "keyFile"
+          }
+        },
+        "privateKeyContent": {
+          "displayName": "Private key (PEM or OpenSSH format)",
+          "description": "Paste the full private key, including the BEGIN and END lines",
+          "type": "secret",
+          "subType": "multiline",
+          "nullable": true,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "maxLength": 20000
+            }
+          ],
+          "maxItems": 1,
+          "precondition": {
+            "type": "EQUALS",
+            "property": "authType",
+            "expectedValue": "keyContent"
+          }
+        },
+        "privateKeyPassphrase": {
+          "displayName": "Private key passphrase",
+          "description": "Leave empty for an unencrypted key",
+          "type": "secret",
+          "nullable": true,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "maxLength": 500
+            }
+          ],
+          "maxItems": 1,
+          "precondition": {
+            "type": "IN",
+            "property": "authType",
+            "expectedValues": [
+              "keyFile",
+              "keyContent"
+            ]
+          }
+        },
+        "hostKeyVerification": {
+          "displayName": "Host key verification",
+          "type": {
+            "$ref": "#/enums/sshHostKeyVerification"
+          },
+          "nullable": false,
+          "default": "pinnedFingerprint",
+          "maxItems": 1
+        },
+        "hostKeyFingerprint": {
+          "displayName": "Expected host key fingerprint",
+          "description": "The SHA256:... value printed by ssh-keyscan. Leave empty once and the first run reports the fingerprint it saw.",
+          "type": "text",
+          "nullable": true,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "maxLength": 200
+            }
+          ],
+          "maxItems": 1,
+          "precondition": {
+            "type": "EQUALS",
+            "property": "hostKeyVerification",
+            "expectedValue": "pinnedFingerprint"
+          }
+        },
+        "knownHostsPath": {
+          "displayName": "known_hosts file path",
+          "description": "Absolute path on the ActiveGate. Defaults to the ActiveGate user known_hosts file.",
+          "type": "text",
+          "nullable": true,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "maxLength": 1000
+            }
+          ],
+          "maxItems": 1,
+          "precondition": {
+            "type": "EQUALS",
+            "property": "hostKeyVerification",
+            "expectedValue": "knownHosts"
+          }
+        },
+        "command": {
+          "displayName": "Command",
+          "description": "Runs through the login user default shell, exactly as typed",
+          "type": "text",
+          "subType": "multiline",
+          "nullable": false,
+          "default": "",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 8000
+            }
+          ],
+          "maxItems": 1
+        },
+        "usePty": {
+          "displayName": "Allocate a pseudo-terminal",
+          "description": "Needed by commands that refuse to run without a TTY. Merges stderr into stdout.",
+          "type": "boolean",
+          "nullable": false,
+          "default": false,
+          "maxItems": 1
+        },
+        "intervalMinutes": {
+          "displayName": "Run every (minutes)",
+          "type": "integer",
+          "nullable": false,
+          "default": 5,
+          "constraints": [
+            {
+              "type": "RANGE",
+              "minimum": 1,
+              "maximum": 1440
+            }
+          ],
+          "maxItems": 1
+        },
+        "connectTimeoutSeconds": {
+          "displayName": "Connect timeout (seconds)",
+          "type": "integer",
+          "nullable": false,
+          "default": 15,
+          "constraints": [
+            {
+              "type": "RANGE",
+              "minimum": 1,
+              "maximum": 300
+            }
+          ],
+          "maxItems": 1
+        },
+        "commandTimeoutSeconds": {
+          "displayName": "Command timeout (seconds)",
+          "type": "integer",
+          "nullable": false,
+          "default": 60,
+          "constraints": [
+            {
+              "type": "RANGE",
+              "minimum": 1,
+              "maximum": 900
+            }
+          ],
+          "maxItems": 1
+        },
+        "logSource": {
+          "displayName": "Log source",
+          "description": "Stored as log.source, use it to find these records in Logs",
+          "type": "text",
+          "nullable": false,
+          "default": "ssh.command",
+          "constraints": [
+            {
+              "type": "LENGTH",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          ],
+          "maxItems": 1
+        },
+        "splitLines": {
+          "displayName": "One log record per output line",
+          "description": "Turn off to ingest the whole output as a single multi-line record",
+          "type": "boolean",
+          "nullable": false,
+          "default": true,
+          "maxItems": 1
+        },
+        "maxLines": {
+          "displayName": "Maximum lines per run",
+          "type": "integer",
+          "nullable": false,
+          "default": 1000,
+          "constraints": [
+            {
+              "type": "RANGE",
+              "minimum": 1,
+              "maximum": 50000
+            }
+          ],
+          "maxItems": 1
+        },
+        "maxOutputBytes": {
+          "displayName": "Maximum output bytes per run",
+          "type": "integer",
+          "nullable": false,
+          "default": 1048576,
+          "constraints": [
+            {
+              "type": "RANGE",
+              "minimum": 1024,
+              "maximum": 10485760
+            }
+          ],
+          "maxItems": 1
+        },
+        "additionalAttributes": {
+          "displayName": "Additional log attributes",
+          "description": "Added to every log record from this endpoint",
+          "type": "list",
+          "items": {
+            "type": {
+              "$ref": "#/types/dynatrace.datasource.python:ssh-log-attribute"
+            }
+          },
+          "nullable": false,
+          "minItems": 0,
+          "maxItems": 50,
+          "metaData": {
+            "addItemButton": "Add attribute"
+          }
+        }
+      }
+    },
+    "pythonRemote": {
+      "type": "object",
+      "properties": {
+        "endpoints": {
+          "displayName": "SSH command endpoints",
+          "type": "list",
+          "items": {
+            "type": {
+              "$ref": "#/types/dynatrace.datasource.python:ssh-command-endpoint"
+            }
+          },
+          "nullable": false,
+          "minItems": 1,
+          "maxItems": 100,
+          "metaData": {
+            "addItemButton": "Add endpoint"
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "pythonRemote": {
+      "displayName": "SSH command logs",
+      "type": {
+        "$ref": "#/types/pythonRemote"
+      }
+    }
+  }
+}

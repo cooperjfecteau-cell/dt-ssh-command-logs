@@ -1,0 +1,39 @@
+name: custom:ssh.command.logs
+version: 0.1.0
+minDynatraceVersion: "1.285"
+author:
+  name: Cooper Fecteau
+
+python:
+  runtime:
+    module: ssh_command_logs
+    version:
+      min: "3.10"
+
+  # Remote only: the extension runs on an ActiveGate and reaches out over SSH.
+  # A local (OneAgent) activation would mean SSHing from the host into itself.
+  activation:
+    remote:
+      path: activationSchema.json
+
+metrics:
+  - key: ssh.command.exit_code
+    metadata:
+      displayName: SSH command exit code
+      description: Exit status returned by the remote command
+      unit: Count
+  - key: ssh.command.duration
+    metadata:
+      displayName: SSH command duration
+      description: Wall-clock time to connect, run the command and read its output
+      unit: MilliSecond
+  - key: ssh.command.output_lines
+    metadata:
+      displayName: SSH command output lines
+      description: Number of output lines ingested as logs
+      unit: Count
+  - key: ssh.command.success
+    metadata:
+      displayName: SSH command success
+      description: 1 when the command ran and exited 0, otherwise 0
+      unit: Count
