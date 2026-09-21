@@ -165,3 +165,6 @@ secrets.json
 .venv/
 *.zip
 .local/
+
+# Local Dynatrace API token used for test uploads
+.dt-ext-token

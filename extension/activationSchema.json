@@ -165,7 +165,6 @@
           "displayName": "Password",
           "type": "secret",
           "nullable": true,
-          "default": "",
           "constraints": [
             {
               "type": "LENGTH",
@@ -184,7 +183,6 @@
           "description": "Absolute path on the ActiveGate, readable by the ActiveGate service user",
           "type": "text",
           "nullable": true,
-          "default": "",
           "constraints": [
             {
               "type": "LENGTH",
@@ -204,7 +202,6 @@
           "type": "secret",
           "subType": "multiline",
           "nullable": true,
-          "default": "",
           "constraints": [
             {
               "type": "LENGTH",
@@ -223,7 +220,6 @@
           "description": "Leave empty for an unencrypted key",
           "type": "secret",
           "nullable": true,
-          "default": "",
           "constraints": [
             {
               "type": "LENGTH",
@@ -254,7 +250,6 @@
           "description": "The SHA256:... value printed by ssh-keyscan. Leave empty once and the first run reports the fingerprint it saw.",
           "type": "text",
           "nullable": true,
-          "default": "",
           "constraints": [
             {
               "type": "LENGTH",
@@ -273,7 +268,6 @@
           "description": "Absolute path on the ActiveGate. Defaults to the ActiveGate user known_hosts file.",
           "type": "text",
           "nullable": true,
-          "default": "",
           "constraints": [
             {
               "type": "LENGTH",
@@ -498,7 +492,6 @@
           "description": "Leave empty to use the endpoint log source",
           "type": "text",
           "nullable": true,
-          "default": "",
           "constraints": [
             {
               "type": "LENGTH",
